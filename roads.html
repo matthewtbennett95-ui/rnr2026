@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RNR Nashville 2026 — Road Closures</title>
+
+<!--
+  ============================================================
+  LIBRARIES USED
+  ============================================================
+  Leaflet.js — the core interactive map library. It handles
+  rendering tiles (the background map imagery), drawing shapes
+  like polylines and markers, and handling user interaction
+  like clicks and zooms.
+
+  We load it from a CDN (Content Delivery Network) so we
+  don't have to host the files ourselves. The CSS file styles
+  the map controls; the JS file contains all the logic.
+  ============================================================
+-->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+<style>
+  /*
+    ============================================================
+    CSS CUSTOM PROPERTIES (variables)
+    ============================================================
+    Defining colors once here as variables means if you want
+    to change the color scheme, you only edit one place.
+    var(--bg-dark) everywhere automatically updates.
+    ============================================================
+  */
+  :root {
+    --bg-dark:    #0f0f1a;
+    --bg-panel:   #1a1a2e;
+    --bg-control: #252540;
+    --accent:     #e63946;
+    --text:       #e8e8f0;
+    --text-muted: #8888aa;
+    --border:     #33334a;
+
+    /* Phase colors — one variable per phase makes it easy
+       to change a single color without hunting through code */
+    --c-advance: #9b59b6;
+    --c-early:   #e63946;
+    --c-mid:     #f4a261;
+    --c-main:    #ffd60a;
+    --c-ramp:    #a8dadc;
+    --c-sunday:  #4cc9f0;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Georgia', serif;
+    background: var(--bg-dark);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column; /* Stack header above map vertically */
+  }
+
+  /* ── HEADER BAR ── */
+  #header {
+    background: var(--bg-panel);
+    border-bottom: 2px solid var(--accent);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    z-index: 1000; /* Keep above the map */
+    flex-shrink: 0; /* Don't let the map push it off screen */
+  }
+
+  #header h1 {
+    font-size: 14px;
+    font-weight: bold;
+    color: #fff;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  #header h1 span { color: var(--accent); }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-control);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+  }
+  .control-group label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    white-space: nowrap;
+  }
+  .control-group select, .control-group input[type="checkbox"] {
+    background: var(--bg-dark);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+  .control-group select:focus { outline: none; border-color: var(--accent); }
+
+  #status-bar {
+    font-size: 12px;
+    font-weight: bold;
+    padding: 4px 10px;
+    background: rgba(230,57,70,0.12);
+    border: 1px solid rgba(230,57,70,0.3);
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  #status-bar.clear { background: rgba(100,200,100,0.12); border-color: rgba(100,200,100,0.3); color: #6fc36f; }
+  #status-bar.busy  { color: var(--accent); }
+
+  #loading-bar {
+    font-size: 11px;
+    color: var(--c-main);
+    white-space: nowrap;
+    display: none; /* Hidden until routing is in progress */
+  }
+
+  /* ── MAP fills remaining vertical space ── */
+  #map { flex: 1; }
+
+  /* ── LEGEND ── */
+  .legend {
+    background: rgba(26,26,46,0.95);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 2;
+  }
+  .legend h4 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .leg { display: flex; align-items: center; gap: 8px; }
+  .leg-line { width: 22px; height: 4px; border-radius: 2px; flex-shrink: 0; }
+  .leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── POPUP styling ── */
+  .leaflet-popup-content-wrapper {
+    background: var(--bg-panel);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+    min-width: 220px;
+  }
+  .leaflet-popup-tip { background: var(--bg-panel); }
+  .leaflet-popup-content { margin: 10px 14px; }
+  .pu-road  { font-size: 14px; font-weight: bold; color: #fff; margin-bottom: 3px; }
+  .pu-seg   { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+  .pu-time  { font-size: 12px; }
+  .pu-time b { color: var(--accent); }
+  .pu-phase { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .pu-note  { font-size: 11px; color: var(--c-mid); margin-top: 4px; font-style: italic; }
+  .pu-open  { font-size: 11px; color: #6fc36f; margin-top: 4px; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>RNR Nashville 2026 &nbsp;<span>Road Closures</span></h1>
+
+  <div class="control-group">
+    <label>Your time Sat Apr 25:</label>
+    <!--
+      Each <option> value is a 24-hour integer (e.g. 615 = 6:15 AM).
+      Special string values handle the non-Saturday events.
+      The onchange calls updateMap() to re-filter which roads show.
+    -->
+<select id="time-select" onchange="updateMap()" style="padding: 6px; font-size: 14px; border-radius: 4px;">
+  <option value="fri">Friday & Pre-Race</option>
+  <option value="sat_dropoff" selected>Saturday Drop-off (3:00 AM - 5:45 AM)</option>
+  <option value="sat_main">Saturday Race Peak (5:45 AM - 1:00 PM)</option>
+  <option value="sat_aft">Saturday Afternoon (1:00 PM - 6:00 PM)</option>
+  <option value="sun">Sunday (Post-Race)</option>
+</select>
+  </div>
+
+  <div class="control-group">
+    <label><input type="checkbox" id="show-poi" checked onchange="togglePOIs()"> Key locations</label>
+  </div>
+
+  <div id="loading-bar">⟳ Snapping routes to roads…</div>
+  <div id="status-bar" class="busy">Loading…</div>
+  
+  <button onclick="downloadCache()" style="padding: 4px 8px; margin-left: auto; cursor:pointer;">💾 Save Cache</button>
+</div>
+
+<div id="map"></div>
+
+<script>
+/*
+  ============================================================
+  SECTION 1: TIME UTILITY FUNCTIONS
+  ============================================================
+  All times in the closure data are stored as integers in
+  "HHMM" format: 545 = 5:45 AM, 1130 = 11:30 AM.
+
+  This is simpler than using Date objects for our use case —
+  we just need to compare numbers to filter which closures
+  are active at any given time.
+  ============================================================
+*/
+
+/**
+ * Convert an HHMM integer to a readable 12-hour string.
+ * e.g. 545 → "5:45 AM", 1330 → "1:30 PM"
+ */
+function fmtTime(hhmm) {
+  if (typeof hhmm !== 'number') return String(hhmm);
+  const h   = Math.floor(hhmm / 100);      // e.g. 545 → 5
+  const m   = hhmm % 100;                  // e.g. 545 → 45
+  const ampm = h < 12 ? 'AM' : 'PM';
+  const h12  = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
+}
+
+/**
+ * Determine whether a closure is active at a given time.
+ *
+ * A closure is active if:  closedTime <= currentTime < openTime
+ *
+ * Special cases:
+ *  - FRI_ADV: only show advance closures (phase === 'ADV')
+ *  - SUN_KIDS: only show Sunday closures (phase === 'SUN')
+ *  - Normal Saturday time: show any closure whose window
+ *    includes the selected time, excluding ADV and SUN
+ */
+function isActive(closure, selectedVal) {
+  const { phase, closedHHMM, openHHMM } = closure;
+
+  if (selectedVal === 'FRI_ADV') return phase === 'ADV';
+  if (selectedVal === 'SUN_KIDS') return phase === 'SUN';
+
+  // If we're on a normal Saturday time:
+  if (phase === 'ADV' || phase === 'SUN') return false;
+
+  const t = parseInt(selectedVal, 10);
+  return t >= closedHHMM && t < openHHMM;
+}
+
+
+/*
+  ============================================================
+  SECTION 2: ROAD CLOSURE DATA
+  ============================================================
+  Each closure object describes one road segment that gets
+  closed. The key fields:
+
+    phase      — which "wave" of closure this belongs to
+                 (used for color-coding)
+    road       — human-readable road name for popups
+    from/to    — intersections (for popup display only)
+    closedHHMM — time road closes, as HHMM integer
+    openHHMM   — time road re-opens, as HHMM integer
+    waypoints  — array of [lat, lng] pairs that define the
+                 START and END of the segment. These are
+                 intersection coordinates looked up from
+                 Google Maps. The router will find the
+                 actual road path between them.
+    notes      — any special access exceptions
+
+  PHASE codes:
+    ADV   = Advance (Friday through Saturday)
+    EARLY = Race Day Early (3:00–5:00 AM)
+    MID   = Race Day Mid (5:00–5:45 AM)
+    MAIN  = Race Day Main (5:45 AM+)
+    RAMP  = Freeway ramp closures
+    SUN   = Sunday Kids Rock
+  ============================================================
+*/
+const PHASE_COLORS = {
+  ADV:   '#9b59b6',
+  EARLY: '#e63946',
+  MID:   '#f4a261',
+  MAIN:  '#ffd60a',
+  RAMP:  '#a8dadc',
+  SUN:   '#4cc9f0',
+};
+
+const PHASE_LABELS = {
+  ADV:   'Advance (Fri–Sat)',
+  EARLY: 'Race Early 3–5 AM',
+  MID:   'Race Mid 5–5:45 AM',
+  MAIN:  'Race Main 5:45 AM+',
+  RAMP:  'Freeway Ramps',
+  SUN:   'Sunday Kids Rock',
+};
+
+/*
+  Waypoints are [lat, lng] pairs at real intersections.
+  Two waypoints = one road segment (start → end).
+  Three waypoints = road that bends (start → bend → end).
+
+  Coordinates sourced from Google Maps right-click on each
+  named intersection in Nashville. More waypoints = more
+  accurate road-following, but also more routing API calls.
+*/
+const closures = [
+
+  // ── ADVANCE CLOSURES (Fri 8:00 AM → Sat 6:00 PM) ────────────────────────
+
+  { phase:'ADV', road:'Victory Ave',  from:'S 1st St',   to:'Titans Way',
+    closedHHMM:800,  openHHMM:1800,
+    waypoints:[[36.16492,-86.77147],[36.16492,-86.76876]],
+    notes:'Advance setup closure' },
+
+  { phase:'ADV', road:'Titans Way',   from:'Victory Ave', to:'Russell St',
+    closedHHMM:800,  openHHMM:1800,
+    waypoints:[[36.16492,-86.76876],[36.16289,-86.76876]],
+    notes:'Event/Nissan Traffic Only' },
+
+  { phase:'ADV', road:'Russell St',   from:'Titans Way',  to:'S 1st St',
+    closedHHMM:800,  openHHMM:1800,
+    waypoints:[[36.16289,-86.76876],[36.16289,-86.77147]],
+    notes:'Event/Nissan Traffic Only' },
+
+  { phase:'ADV', road:'S 1st St',     from:'Woodland St', to:'Russell St',
+    closedHHMM:800,  openHHMM:1800,
+    waypoints:[[36.16696,-86.77147],[36.16289,-86.77147]],
+    notes:'Event/Nissan Traffic Only' },
+
+
+  // ── RACE DAY EARLY (closes 3:00 AM = 300) ───────────────────────────────
+
+  { phase:'EARLY', road:'Broadway',         from:'3rd Ave S',   to:'13th Ave N',
+    closedHHMM:300,  openHHMM:1100,
+    waypoints:[[36.15944,-86.77499],[36.15944,-86.79194]],
+    notes:'Two-way in single access lane on south curb from I-40 ramp to 10th' },
+
+  { phase:'EARLY', road:'7th Ave N',        from:'Broadway',    to:'Commerce St',
+    closedHHMM:300,  openHHMM:900,
+    waypoints:[[36.15944,-86.78572],[36.16374,-86.78572]], notes:'' },
+
+  { phase:'EARLY', road:'Rosa Parks Blvd',  from:'Broadway',    to:'Commerce St',
+    closedHHMM:300,  openHHMM:900,
+    waypoints:[[36.15944,-86.79194],[36.16374,-86.79194]], notes:'' },
+
+  { phase:'EARLY', road:'9th Ave N',        from:'Broadway',    to:'Commerce St',
+    closedHHMM:300,  openHHMM:900,
+    waypoints:[[36.15944,-86.78750],[36.16374,-86.78750]], notes:'' },
+
+  { phase:'EARLY', road:'10th Ave N',       from:'Broadway',    to:'Commerce St',
+    closedHHMM:300,  openHHMM:900,
+    waypoints:[[36.15944,-86.78900],[36.16374,-86.78900]], notes:'' },
+
+  { phase:'EARLY', road:'Demonbreun St',    from:'3rd Ave S',   to:'8th Ave S',
+    closedHHMM:300,  openHHMM:1000,
+    waypoints:[[36.14940,-86.77499],[36.14940,-86.78572]], notes:'' },
+
+  { phase:'EARLY', road:'Music Row Roundabout', from:'Demonbreun St', to:'17th Ave',
+    closedHHMM:300,  openHHMM:1130,
+    waypoints:[[36.14940,-86.79800],[36.15060,-86.80070]], notes:'' },
+
+  { phase:'EARLY', road:'S 1st St',         from:'Woodland St', to:'Russell St',
+    closedHHMM:300,  openHHMM:1800,
+    waypoints:[[36.16696,-86.77147],[36.16289,-86.77147]], notes:'' },
+
+  { phase:'EARLY', road:'Russell St',        from:'Titans Way',  to:'S 2nd St',
+    closedHHMM:300,  openHHMM:1800,
+    waypoints:[[36.16289,-86.76876],[36.16289,-86.77350]], notes:'' },
+
+  { phase:'EARLY', road:'Titans Way',        from:'Russell St',  to:'Victory Ave',
+    closedHHMM:300,  openHHMM:1800,
+    waypoints:[[36.16289,-86.76876],[36.16492,-86.76876]], notes:'' },
+
+
+  // ── RACE DAY MID (closes 5:00 AM = 500, or 5:30 AM = 530) ───────────────
+
+  { phase:'MID', road:'2nd Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:845,
+    waypoints:[[36.15944,-86.77499],[36.14940,-86.77499]], notes:'' },
+
+  { phase:'MID', road:'3rd Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:845,
+    waypoints:[[36.15944,-86.77573],[36.14940,-86.77573]], notes:'' },
+
+  { phase:'MID', road:'4th Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:845,
+    waypoints:[[36.15944,-86.77670],[36.14940,-86.77670]], notes:'' },
+
+  { phase:'MID', road:'5th Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:845,
+    waypoints:[[36.15944,-86.77780],[36.14940,-86.77780]], notes:'' },
+
+  { phase:'MID', road:'6th Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:845,
+    waypoints:[[36.15944,-86.77900],[36.14940,-86.77900]], notes:'' },
+
+  { phase:'MID', road:'7th Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:900,
+    waypoints:[[36.15944,-86.78020],[36.14940,-86.78020]], notes:'' },
+
+  { phase:'MID', road:'8th Ave S',  from:'Broadway', to:'Demonbreun St',
+    closedHHMM:500, openHHMM:900,
+    waypoints:[[36.15944,-86.78120],[36.14940,-86.78120]], notes:'' },
+
+  { phase:'MID', road:'12th Ave S', from:'Broadway', to:'Demonbreun St',
+    closedHHMM:530, openHHMM:900,
+    waypoints:[[36.15944,-86.79300],[36.14940,-86.79300]], notes:'' },
+
+  { phase:'MID', road:'McGavock St', from:'12th Ave S', to:'11th Ave S',
+    closedHHMM:530, openHHMM:900,
+    waypoints:[[36.14940,-86.79300],[36.14940,-86.79100]], notes:'' },
+
+  { phase:'MID', road:'Demonbreun St', from:'8th Ave S', to:'Music Row Roundabout',
+    closedHHMM:530, openHHMM:930,
+    waypoints:[[36.14940,-86.78572],[36.14940,-86.79800]],
+    notes:'Two way in eastbound lanes Camden Music Row to 12th Ave S for I-40 access' },
+
+
+  // ── RACE DAY MAIN (closes 5:45 AM = 545) ────────────────────────────────
+  // This is the bulk of the course — Music Row south loop, then
+  // north through downtown and into East Nashville
+
+  { phase:'MAIN', road:'17th Ave S',  from:'Music Row Roundabout', to:'Magnolia Blvd/18th Ave S',
+    closedHHMM:545, openHHMM:945,
+    waypoints:[[36.15060,-86.80070],[36.13700,-86.80100]], notes:'' },
+
+  { phase:'MAIN', road:'Magnolia Blvd', from:'17th Ave', to:'18th Ave',
+    closedHHMM:545, openHHMM:945,
+    waypoints:[[36.13700,-86.80100],[36.13700,-86.80380]],
+    notes:'Southbound only; Two way in single westbound access lane from Best Western to Music Circle E' },
+
+  { phase:'MAIN', road:'18th Ave',    from:'Magnolia Blvd', to:'Portland Ave',
+    closedHHMM:545, openHHMM:945,
+    waypoints:[[36.13700,-86.80380],[36.13050,-86.80380]], notes:'' },
+
+  { phase:'MAIN', road:'Portland Ave', from:'18th Ave', to:'Belmont Blvd',
+    closedHHMM:545, openHHMM:945,
+    waypoints:[[36.13050,-86.80380],[36.13050,-86.80620]], notes:'' },
+
+  { phase:'MAIN', road:'Belmont Blvd', from:'Portland Ave', to:'Clifton Lane',
+    closedHHMM:545, openHHMM:1000,
+    waypoints:[[36.13050,-86.80620],[36.12100,-86.80620]], notes:'' },
+
+  { phase:'MAIN', road:'Clifton Lane', from:'Belmont Blvd', to:'Lealand Lane',
+    closedHHMM:545, openHHMM:1015,
+    waypoints:[[36.12100,-86.80620],[36.12100,-86.79950]], notes:'' },
+
+  { phase:'MAIN', road:'Lealand Lane', from:'Clifton Lane', to:'Clayton Ave',
+    closedHHMM:545, openHHMM:1030,
+    waypoints:[[36.12100,-86.79950],[36.11550,-86.79950]], notes:'' },
+
+  { phase:'MAIN', road:'Clayton Ave',  from:'Lealand Lane', to:'12th Ave S/Granny White',
+    closedHHMM:545, openHHMM:1030,
+    waypoints:[[36.11550,-86.79950],[36.11550,-86.79300]], notes:'' },
+
+  { phase:'MAIN', road:'12th Ave S',   from:'Clayton Ave', to:'Wedgewood Ave',
+    closedHHMM:545, openHHMM:1045,
+    waypoints:[[36.11550,-86.79300],[36.12800,-86.79300]], notes:'' },
+
+  { phase:'MAIN', road:'Wedgewood Ave', from:'12th Ave S', to:'Magnolia Blvd',
+    closedHHMM:545, openHHMM:1100,
+    waypoints:[[36.12800,-86.79300],[36.12800,-86.80100]], notes:'' },
+
+  { phase:'MAIN', road:'Magnolia Blvd', from:'Wedgewood Ave', to:'16th Ave S',
+    closedHHMM:545, openHHMM:1100,
+    waypoints:[[36.12800,-86.80100],[36.12800,-86.79800]], notes:'' },
+
+  { phase:'MAIN', road:'16th Ave S',   from:'Wedgewood Ave', to:'Division St',
+    closedHHMM:545, openHHMM:1130,
+    waypoints:[[36.12800,-86.79800],[36.13480,-86.79800]], notes:'' },
+
+  { phase:'MAIN', road:'Division St',  from:'16th Ave S', to:'12th Ave S',
+    closedHHMM:545, openHHMM:1130,
+    waypoints:[[36.13480,-86.79800],[36.13480,-86.79300]], notes:'' },
+
+  { phase:'MAIN', road:'12th Ave S',   from:'Division St', to:'11th Ave S',
+    closedHHMM:545, openHHMM:1140,
+    waypoints:[[36.13480,-86.79300],[36.14100,-86.79300]], notes:'' },
+
+  { phase:'MAIN', road:'11th Ave S',   from:'12th Ave S', to:'11th Ave N',
+    closedHHMM:545, openHHMM:1140,
+    waypoints:[[36.14100,-86.79300],[36.15944,-86.79200]],
+    notes:'Two way in single lane from Hillside Apts to Caldwell Ave' },
+
+  { phase:'MAIN', road:'11th Ave N',   from:'11th Ave S', to:'Lifeway Plaza',
+    closedHHMM:545, openHHMM:1140,
+    waypoints:[[36.15944,-86.79200],[36.16650,-86.79200]],
+    notes:'Two way in single northbound access lane from Eleven North exit to MLK Jr Blvd' },
+
+  { phase:'MAIN', road:'Nelson Merry St', from:'11th Ave N', to:'Rev. Kelly M. Smith Way',
+    closedHHMM:545, openHHMM:1145,
+    waypoints:[[36.16650,-86.79200],[36.16650,-86.78950]], notes:'' },
+
+  { phase:'MAIN', road:'Rev. Kelly M. Smith Way', from:'Charlotte Ave', to:'Rosa Parks Blvd',
+    closedHHMM:545, openHHMM:1145,
+    waypoints:[[36.16800,-86.78950],[36.16800,-86.79200]], notes:'' },
+
+  { phase:'MAIN', road:'Rosa Parks Blvd', from:'Rev. Kelly M. Smith Way', to:'Jefferson St',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.16800,-86.79200],[36.17300,-86.79200]], notes:'' },
+
+  { phase:'MAIN', road:'Monroe St',    from:'Rosa Parks Blvd', to:'7th Ave N',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17300,-86.79200],[36.17300,-86.78572]], notes:'' },
+
+  { phase:'MAIN', road:'7th Ave N',    from:'Monroe St', to:'Jefferson St',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17300,-86.78572],[36.17600,-86.78572]], notes:'' },
+
+  { phase:'MAIN', road:'Rosa Parks Blvd', from:'Jefferson St', to:'Vantage Way',
+    closedHHMM:545, openHHMM:1100,
+    waypoints:[[36.17600,-86.79200],[36.18500,-86.79200]],
+    notes:'Northbound only; Southbound lanes used for contraflow vehicular traffic' },
+
+  { phase:'MAIN', road:'Vantage Way',  from:'Rosa Parks Blvd', to:'Great Circle Rd',
+    closedHHMM:545, openHHMM:1115,
+    waypoints:[[36.18500,-86.79200],[36.18500,-86.78400]],
+    notes:'Eastbound only' },
+
+  { phase:'MAIN', road:'Great Circle Rd', from:'Vantage Way', to:'Cumberland River Greenway',
+    closedHHMM:545, openHHMM:1115,
+    waypoints:[[36.18500,-86.78400],[36.18900,-86.78000]],
+    notes:'Eastbound only' },
+
+  { phase:'MAIN', road:'Cumberland River Greenway', from:'Great Circle Rd', to:'Madison St',
+    closedHHMM:545, openHHMM:1115,
+    waypoints:[[36.18900,-86.78000],[36.18900,-86.77200]], notes:'' },
+
+  { phase:'MAIN', road:'Madison St',   from:'Greenway', to:'2nd Ave N',
+    closedHHMM:545, openHHMM:1130,
+    waypoints:[[36.18900,-86.77200],[36.18900,-86.77500]],
+    notes:'Eastbound only' },
+
+  { phase:'MAIN', road:'Taylor St',    from:'2nd Ave N', to:'Adams St',
+    closedHHMM:545, openHHMM:1130,
+    waypoints:[[36.18200,-86.77500],[36.18200,-86.77700]], notes:'' },
+
+  { phase:'MAIN', road:'2nd Ave N',    from:'Madison St', to:'Stockyard St',
+    closedHHMM:545, openHHMM:1145,
+    waypoints:[[36.18200,-86.77500],[36.18900,-86.77500]],
+    notes:'Northbound only' },
+
+  { phase:'MAIN', road:'3rd Ave N',    from:'Stockyard St', to:'Junior Gilliam Way',
+    closedHHMM:545, openHHMM:1145,
+    waypoints:[[36.18900,-86.77573],[36.17600,-86.77573]], notes:'' },
+
+  { phase:'MAIN', road:'Jefferson St', from:'Rosa Parks Blvd', to:'Rep John Lewis Way',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17600,-86.79200],[36.17600,-86.77800]],
+    notes:'Eastbound only; Westbound access maintained through 3rd Ave N' },
+
+  { phase:'MAIN', road:'Rep John Lewis Way', from:'Jefferson St', to:'James Robertson Pkwy',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17600,-86.77800],[36.16500,-86.77800]], notes:'' },
+
+  { phase:'MAIN', road:'Junior Gilliam Way', from:'6th Ave N', to:'2nd Ave N',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17600,-86.78100],[36.17600,-86.77500]], notes:'' },
+
+  { phase:'MAIN', road:'6th Ave N',    from:'Jefferson St', to:'James Robertson Pkwy',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17600,-86.78100],[36.16500,-86.78100]], notes:'' },
+
+  { phase:'MAIN', road:'7th Ave N',    from:'Jefferson St', to:'James Robertson Pkwy',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17600,-86.78572],[36.16500,-86.78572]], notes:'' },
+
+  { phase:'MAIN', road:'Harrison St',  from:'Rosa Parks Blvd', to:'John Lewis Way',
+    closedHHMM:545, openHHMM:1200,
+    waypoints:[[36.17450,-86.79200],[36.17450,-86.77800]], notes:'' },
+
+  { phase:'MAIN', road:'James Robertson Pkwy', from:'Gay St', to:'Rosa Parks Blvd',
+    closedHHMM:545, openHHMM:1215,
+    waypoints:[[36.16500,-86.77200],[36.16500,-86.79200]],
+    notes:'Westbound only' },
+
+  { phase:'MAIN', road:'3rd Ave N',    from:'James Robertson Pkwy', to:'Union St',
+    closedHHMM:545, openHHMM:1215,
+    waypoints:[[36.16500,-86.77573],[36.16200,-86.77573]], notes:'' },
+
+  { phase:'MAIN', road:'Union St',     from:'3rd Ave N', to:'Woodland St',
+    closedHHMM:545, openHHMM:1215,
+    waypoints:[[36.16200,-86.77573],[36.16200,-86.77000]], notes:'' },
+
+  // Woodland St has two segments with different open times
+  { phase:'MAIN', road:'Woodland St',  from:'Union St', to:'S 5th St',
+    closedHHMM:545, openHHMM:1430,   // opens 2:30 PM
+    waypoints:[[36.16200,-86.77000],[36.16200,-86.77800]],
+    notes:'Westbound access lane from S 7th to S 9th' },
+
+  { phase:'MAIN', road:'Woodland St',  from:'S 5th St', to:'S 11th St',
+    closedHHMM:545, openHHMM:1215,
+    waypoints:[[36.16200,-86.77800],[36.16200,-86.78800]], notes:'' },
+
+  { phase:'MAIN', road:'S 11th St',    from:'Woodland St', to:'Fatherland St',
+    closedHHMM:545, openHHMM:1215,
+    waypoints:[[36.16200,-86.78800],[36.15800,-86.78800]],
+    notes:'Southbound only' },
+
+  { phase:'MAIN', road:'Fatherland St', from:'S 11th St', to:'S 10th St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.15800,-86.78800],[36.15800,-86.78600]],
+    notes:'Eastbound access lane on south curb from 500 Fatherland to S 7th St' },
+
+  { phase:'MAIN', road:'S 10th St',    from:'Fatherland St', to:'Woodland St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.15800,-86.78600],[36.16200,-86.78600]], notes:'' },
+
+  { phase:'MAIN', road:'Russell St (E)', from:'S 10th St', to:'S 7th St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.16000,-86.78600],[36.16000,-86.78100]],
+    notes:'Westbound access lane from Edgefield Church parking lot to 10th' },
+
+  { phase:'MAIN', road:'S 9th St',     from:'Russell St', to:'Fatherland St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.16000,-86.78400],[36.15800,-86.78400]], notes:'' },
+
+  { phase:'MAIN', road:'S 8th St',     from:'Fatherland St', to:'Russell St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.15800,-86.78200],[36.16000,-86.78200]], notes:'' },
+
+  { phase:'MAIN', road:'S 7th St',     from:'Russell St', to:'Fatherland St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.16000,-86.78100],[36.15800,-86.78100]], notes:'' },
+
+  { phase:'MAIN', road:'Fatherland St', from:'S 7th St', to:'S 5th St',
+    closedHHMM:545, openHHMM:1230,
+    waypoints:[[36.15800,-86.78100],[36.15800,-86.77800]], notes:'' },
+
+  { phase:'MAIN', road:'S 5th St',     from:'Woodland St', to:'Davidson St',
+    closedHHMM:545, openHHMM:1430,   // opens 2:30 PM
+    waypoints:[[36.16200,-86.77800],[36.15200,-86.77800]],
+    notes:'Two way in single lane on west curb; Northbound access lane from Crutcher to Shelby Ave' },
+
+  { phase:'MAIN', road:'Davidson St',  from:'S 5th St', to:'Shelby Park',
+    closedHHMM:545, openHHMM:1345,   // opens 1:45 PM
+    waypoints:[[36.15200,-86.77800],[36.15200,-86.76500]], notes:'' },
+
+  { phase:'MAIN', road:'Shelby Park & Bottoms', from:'All park roads', to:'',
+    closedHHMM:545, openHHMM:1345,
+    waypoints:[[36.14800,-86.75600],[36.15200,-86.75800]], notes:'' },
+
+  { phase:'MAIN', road:'Victory Ave',  from:'Titans Way', to:'S 2nd St',
+    closedHHMM:600, openHHMM:1800,   // this one closes at 6:00 AM, not 5:45
+    waypoints:[[36.16492,-86.76876],[36.16492,-86.77350]], notes:'' },
+
+
+  // ── FREEWAY RAMP CLOSURES ────────────────────────────────────────────────
+
+  { phase:'RAMP', road:'I-40 EB Ramp at Broadway', from:'', to:'',
+    closedHHMM:545, openHHMM:1100,
+    waypoints:[[36.14900,-86.77600],[36.14900,-86.77400]],
+    notes:'Freeway ramp closure' },
+
+  { phase:'RAMP', road:'I-40 EB Ramp at Demonbreun', from:'', to:'',
+    closedHHMM:545, openHHMM:930,
+    waypoints:[[36.14600,-86.79800],[36.14600,-86.79600]],
+    notes:'Freeway ramp closure' },
+
+  { phase:'RAMP', road:'I-40 WB Ramp at Demonbreun', from:'', to:'',
+    closedHHMM:545, openHHMM:930,
+    waypoints:[[36.14550,-86.79750],[36.14550,-86.79550]],
+    notes:'Freeway ramp closure' },
+
+
+  // ── SUNDAY KIDS ROCK (10:00 AM → 3:00 PM) ───────────────────────────────
+
+  { phase:'SUN', road:'Titans Way',   from:'Victory Ave', to:'Russell St',
+    closedHHMM:1000, openHHMM:1500,
+    waypoints:[[36.16492,-86.76876],[36.16289,-86.76876]],
+    notes:'1 Mile & KIDS ROCK' },
+
+  { phase:'SUN', road:'Victory Ave',  from:'S 2nd St', to:'Titans Way',
+    closedHHMM:1000, openHHMM:1500,
+    waypoints:[[36.16492,-86.77350],[36.16492,-86.76876]],
+    notes:'1 Mile & KIDS ROCK' },
+
+  { phase:'SUN', road:'Russell St',   from:'Titans Way', to:'S 1st St',
+    closedHHMM:1000, openHHMM:1500,
+    waypoints:[[36.16289,-86.76876],[36.16289,-86.77147]],
+    notes:'1 Mile & KIDS ROCK' },
+
+  { phase:'SUN', road:'S 1st St',     from:'Woodland St', to:'Russell St',
+    closedHHMM:1000, openHHMM:1500,
+    waypoints:[[36.16696,-86.77147],[36.16289,-86.77147]],
+    notes:'1 Mile & KIDS ROCK' },
+];
+
+
+/*
+  ============================================================
+  SECTION 3: POINTS OF INTEREST
+  ============================================================
+  These are fixed markers for navigation planning — parking,
+  drop-off zones, the finish line, etc.
+  ============================================================
+*/
+/*
+  ============================================================
+  POINTS OF INTEREST (POIs)
+  ============================================================
+  Custom markers for your exact race day logistics.
+*/
+const POI = [
+  { 
+    name: "10K Start Line", 
+    note: "8th Ave & Demonbreun St", 
+    lat: 36.156897, 
+    lng: -86.780807, 
+    color: "#00ff00" // Green for Start
+  },
+  { 
+    name: "Our Parking Spot", 
+    note: "151 N 1st St (East Bank / Stadium Side)", 
+    lat: 36.172733, 
+    lng: -86.773725, 
+    color: "#4cc9f0" // Blue for Parking
+  },
+  { 
+    name: "Finish Line", 
+    note: "Nissan Stadium (Walk across bridge to car)", 
+    lat: 36.166054, 
+    lng: -86.771460, 
+    color: "#ff00ff" // Pink for Finish
+  }
+];
+
+
+/*
+  ============================================================
+  SECTION 4: MAP INITIALIZATION
+  ============================================================
+  L.map() creates the map and centers it on Nashville.
+  The zoom level 13 shows the whole race corridor.
+
+  L.tileLayer() loads the background map imagery from
+  OpenStreetMap — completely free, no API key needed.
+  {s} = subdomain (a/b/c for load balancing)
+  {z}/{x}/{y} = tile coordinates Leaflet fills in automatically
+  ============================================================
+*/
+const map = L.map('map', {
+  center: [36.158, -86.784],
+  zoom: 13,
+  zoomControl: true,
+});
+
+// Replaced OSM with CARTO Positron (a much cleaner, local-friendly map)
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+  maxZoom: 19,
+}).addTo(map);
+
+
+/*
+  ============================================================
+  SECTION 5: OSRM ROUTING
+  ============================================================
+  OSRM (Open Source Routing Machine) is a free, open routing
+  engine that runs on OpenStreetMap data. The public demo
+  server at router.project-osrm.org accepts requests in this
+  format:
+
+    /route/v1/{profile}/{lng,lat};{lng,lat}?geometries=geojson
+
+  Note: OSRM uses longitude FIRST, then latitude — the
+  opposite of Leaflet which uses [lat, lng]. Be careful!
+
+  The response includes a GeoJSON LineString geometry that
+  follows actual roads. We extract those coordinates and draw
+  them as a Leaflet polyline.
+
+  We cache results in routeCache so we don't re-fetch the
+  same segment every time the user changes the time slider.
+  ============================================================
+*/
+const routeCache = {};  // key: "lat1,lng1|lat2,lng2" → array of [lat,lng]
+
+// A dedicated bucket just for POI markers
+let poiLayers = [];
+
+// A dedicated function that ONLY handles POIs instantly
+function togglePOIs() {
+  const showPOI = document.getElementById('show-poi').checked;
+  
+  // Clear existing POIs
+  poiLayers.forEach(layer => map.removeLayer(layer));
+  poiLayers = [];
+
+  // Draw POIs if checked
+  if (showPOI) {
+    POI.forEach(poi => {
+      const icon = L.divIcon({
+        html: `<div style="
+          width:13px; height:13px;
+          background:${poi.color};
+          border:2px solid #fff;
+          border-radius:50%;
+          box-shadow:0 0 6px rgba(0,0,0,0.6)
+        "></div>`,
+        iconSize: [13,13], iconAnchor: [6,6], className: ''
+      });
+
+      const marker = L.marker([poi.lat, poi.lng], { icon })
+        .addTo(map)
+        .bindPopup(`
+          <div class="pu-road">${poi.name}</div>
+          <div class="pu-note">${poi.note}</div>
+        `);
+
+      poiLayers.push(marker);
+    });
+  }
+}
+
+/**
+ * Fetch a road-snapped route between two [lat,lng] points.
+ * Returns an array of [lat, lng] coordinates following actual roads.
+ * Falls back to a straight line if the API call fails.
+ */
+async function fetchRoute(waypoints) {
+  // Build cache key from all waypoints
+  const cacheKey = waypoints.map(w => w.join(',')).join('|');
+  if (routeCache[cacheKey]) return routeCache[cacheKey];
+
+  // OSRM wants coordinates as "lng,lat;lng,lat" (note: lon first!)
+  const coordStr = waypoints.map(w => `${w[1]},${w[0]}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?geometries=geojson&overview=full`;
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    if (data.code !== 'Ok' || !data.routes.length) throw new Error('No route found');
+
+    // GeoJSON coordinates come back as [lng, lat] — flip to [lat, lng] for Leaflet
+    const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+    routeCache[cacheKey] = coords;
+    return coords;
+
+  } catch (err) {
+    console.warn(`Routing failed for ${cacheKey}:`, err.message);
+    // Fallback: just draw a straight line between the waypoints
+    // This won't follow roads but is better than nothing
+    routeCache[cacheKey] = waypoints;
+    return waypoints;
+  }
+}
+
+
+/*
+  ============================================================
+  SECTION 6: MAP UPDATE LOGIC
+  ============================================================
+  updateMap() is called whenever the user changes the time
+  dropdown or the POI checkbox.
+
+  It:
+  1. Removes all currently-drawn polylines and markers
+  2. Filters the closures array to only active ones
+  3. For each active closure, fetches (or uses cached) road
+     geometry from OSRM
+  4. Draws a colored polyline for each closure
+  5. Draws POI markers if the checkbox is checked
+  6. Updates the status bar
+  ============================================================
+*/
+let drawnLayers = [];   // Track everything we've drawn so we can clear it
+let isUpdating  = false;
+
+async function updateMap() {
+  if (isUpdating) return;  // Prevent overlapping calls
+  isUpdating = true;
+
+  const selectedBucket = document.getElementById('time-select').value;
+
+  // Sync the POIs independently before we start drawing roads!
+  togglePOIs();
+
+  // Clear previous ROAD layers
+  drawnLayers.forEach(layer => map.removeLayer(layer));
+  drawnLayers = [];
+
+  // Filter to active closures based on our buckets
+  const active = closures.filter(closure => {
+    const p = closure.phase || "";
+    const opens = closure.openHHMM || 2400; 
+
+    switch (selectedBucket) {
+      case 'fri': return p === 'ADV';
+      case 'sat_dropoff': return p === 'ADV' || p === 'EARLY' || p === 'MID';
+      case 'sat_main': return p !== 'SUN';
+      case 'sat_aft': return p !== 'SUN' && opens >= 1300;
+      case 'sun': return p === 'SUN';
+      default: return true;
+    }
+  });
+
+  // Update UI Status Bar
+  document.getElementById('status-bar').className = active.length ? 'busy' : 'clear';
+  document.getElementById('status-bar').textContent =
+    active.length
+      ? `${active.length} road${active.length !== 1 ? 's' : ''} closed`
+      : '✓ No closures at this time';
+  document.getElementById('loading-bar').style.display = active.length ? 'block' : 'none';
+
+  // Draw each active closure
+  for (const closure of active) {
+    const coords = await fetchRoute(closure.waypoints);
+    const color  = PHASE_COLORS[closure.phase] || '#ff0000';
+
+    const glowLine = L.polyline(coords, {
+      color: color, weight: 9, opacity: 0.25, smoothFactor: 1
+    }).addTo(map);
+
+    const mainLine = L.polyline(coords, {
+      color: color, weight: 4, opacity: 0.95, smoothFactor: 1
+    }).addTo(map);
+
+    const segText = closure.from && closure.to
+      ? `<div class="pu-seg">${closure.from} → ${closure.to}</div>` : '';
+
+    let timeText = '';
+    if (typeof closure.closedHHMM === 'number' && typeof closure.openHHMM === 'number') {
+        timeText = `Closes: <b>${fmtTime(closure.closedHHMM)}</b> &nbsp;|&nbsp; Opens: <b>${fmtTime(closure.openHHMM)}</b>`;
+    } else if (closure.phase === 'ADV') {
+        timeText = 'Closed: <b>Fri 8:00 AM</b> → <b>Sat 6:00 PM</b>';
+    } else {
+        timeText = `Phase: <b>${closure.phase}</b>`;
+    }
+
+    mainLine.bindPopup(`
+      <div class="pu-road">${closure.road}</div>
+      ${segText}
+      <div class="pu-time">${timeText}</div>
+      <div class="pu-phase">${PHASE_LABELS[closure.phase] || closure.phase}</div>
+      ${closure.notes ? `<div class="pu-note">⚠ ${closure.notes}</div>` : ''}
+    `);
+
+    drawnLayers.push(glowLine, mainLine);
+  }
+
+  document.getElementById('loading-bar').style.display = 'none';
+  isUpdating = false;
+}
+
+
+/*
+  ============================================================
+  SECTION 7: MAP LEGEND
+  ============================================================
+  L.control() creates a custom Leaflet control (UI element).
+  position: 'bottomleft' places it in that corner.
+  onAdd() returns the HTML element to render.
+  ============================================================
+*/
+/*
+  ============================================================
+  SECTION 7: MAP LEGEND
+  ============================================================
+*/
+const legend = L.control({ position: 'bottomleft' });
+legend.onAdd = function() {
+  const div = L.DomUtil.create('div', 'legend');
+  
+  // 1. Generate the Road Closures phase list automatically
+  const phasesHTML = Object.entries(PHASE_LABELS).map(([key, label]) => `
+    <div class="leg">
+      <div class="leg-line" style="background:${PHASE_COLORS[key] || '#aaa'}"></div>
+      ${label}
+    </div>
+  `).join('');
+
+  // 2. Generate the Key Locations dynamically from our exact POI array
+  const poiHTML = POI.map(poi => `
+    <div class="leg">
+      <div class="leg-dot" style="background:${poi.color}; border:1px solid #fff; box-shadow:0 0 3px rgba(0,0,0,0.5);"></div>
+      ${poi.name}
+    </div>
+  `).join('');
+
+  // 3. Put it all together inside the box
+  div.innerHTML = `
+    <h4 style="margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.8;">Road Closures</h4>
+    ${phasesHTML}
+    
+    <div style="margin-top:12px; border-top:1px solid rgba(255,255,255,0.2); padding-top:10px;">
+      <h4 style="margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.8;">Key Locations</h4>
+      ${poiHTML}
+    </div>
+  `;
+  
+  // Prevent map clicks/scrolls from passing through the legend box
+  L.DomEvent.disableClickPropagation(div);
+  L.DomEvent.disableScrollPropagation(div);
+  return div;
+};
+legend.addTo(map);
+
+function downloadCache() {
+  // Convert our populated cache object into a text string
+  const dataStr = "const routeCache = " + JSON.stringify(routeCache, null, 2) + ";";
+  
+  // Create a fake downloadable file in the browser
+  const blob = new Blob([dataStr], { type: "text/javascript" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "my_route_cache.js";
+  a.click();
+}
+
+/*
+  ============================================================
+  SECTION 8: FIRST LOAD
+  ============================================================
+  Call updateMap() once on page load to draw the initial state.
+  ============================================================
+*/
+updateMap();
+
+</script>
+</body>
+</html>
